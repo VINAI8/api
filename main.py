@@ -35,22 +35,14 @@ app.add_middleware(
 )
 
 # === FIREBASE SETUP ===
+FIREBASE_CREDENTIALS_PATH = "/etc/secrets/firebase-adminsdk.json"  # Change path to your secret file location
 
-FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON")
-if FIREBASE_CREDENTIALS_JSON:
-    # Parse the JSON string to dict
-    cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
-    
-    # Write to a temp file because credentials.Certificate expects a path
-    with tempfile.NamedTemporaryFile(mode='w+', delete=False) as temp_cred_file:
-        json.dump(cred_dict, temp_cred_file)
-        temp_cred_file.flush()
-        cred = credentials.Certificate(temp_cred_file.name)
-    
+if os.path.exists(FIREBASE_CREDENTIALS_PATH):
+    cred = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
     firebase_admin.initialize_app(cred)
     db = firestore.client()
 else:
-    raise ValueError("FIREBASE_CREDENTIALS_JSON environment variable not set")
+    raise ValueError(f"Firebase credential file not found at {FIREBASE_CREDENTIALS_PATH}")
 
 # === JWT UTILS ===
 def create_access_token(data: dict, expires_delta=None):
