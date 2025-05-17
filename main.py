@@ -12,6 +12,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import requests
 import os
+import json
+import tempfile
+
 
 # === CONFIG ===
 SECRET_KEY = "super-secret-key"
@@ -33,14 +36,21 @@ app.add_middleware(
 
 # === FIREBASE SETUP ===
 
-FIREBASE_CRED_PATH = os.getenv("FIREBASE_CRED_PATH")
-
-if FIREBASE_CRED_PATH:
-    cred = credentials.Certificate(FIREBASE_CRED_PATH)
+FIREBASE_CREDENTIALS_JSON = os.getenv("FIREBASE_CREDENTIALS_JSON")
+if FIREBASE_CREDENTIALS_JSON:
+    # Parse the JSON string to dict
+    cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
+    
+    # Write to a temp file because credentials.Certificate expects a path
+    with tempfile.NamedTemporaryFile(mode='w+', delete=False) as temp_cred_file:
+        json.dump(cred_dict, temp_cred_file)
+        temp_cred_file.flush()
+        cred = credentials.Certificate(temp_cred_file.name)
+    
     firebase_admin.initialize_app(cred)
     db = firestore.client()
 else:
-    raise ValueError("FIREBASE_CRED_PATH environment variable not set")
+    raise ValueError("FIREBASE_CREDENTIALS_JSON environment variable not set")
 
 # === JWT UTILS ===
 def create_access_token(data: dict, expires_delta=None):
