@@ -120,6 +120,6 @@ async def file_complaint(data: dict, user=Depends(get_current_user)):
     return {"message": "Complaint filed successfully", "complaint": complaint}
 
 # Run the application
-if _name_ == "_main_":
+if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
