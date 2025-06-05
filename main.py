@@ -1,31 +1,27 @@
-import firebase_admin
-from firebase_admin import credentials, firestore
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from jose import jwt, JWTError
 from datetime import datetime, timedelta
-from typing import Optional
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-import requests
+from azure.cosmos import CosmosClient
 import os
-import json
-import tempfile
-
 
 # === CONFIG ===
 SECRET_KEY = "super-secret-key"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
+COSMOS_ENDPOINT = "https://prathinidhidb.documents.azure.com:443/"
+COSMOS_KEY = "nrqSGo8Uj5BRispWlsy32mB1cd4Nj2c7zEHmYAp5vtOed4vZncRHMs3zcgkhxenrhaRRSoVB2PU7ACDbedAHuQ=="
+DATABASE_ID = "form-database"
+CONTAINER_ID = "form-container"
+
 # === APP INITIALIZATION ===
 app = FastAPI()
 auth_scheme = HTTPBearer()
 
-# === CORS ===
+# === CORS SETUP ===
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,23 +30,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === FIREBASE SETUP ===
-FIREBASE_CREDENTIALS_PATH = "/etc/secrets/firebase-adminsdk.json"  # Change path to your secret file location
+# === COSMOS DB SETUP ===
+client = CosmosClient(COSMOS_ENDPOINT, COSMOS_KEY)
+database = client.create_database_if_not_exists(id=DATABASE_ID)
+container = database.create_container_if_not_exists(id=CONTAINER_ID, partition_key="/mobile")
 
-if os.path.exists(FIREBASE_CREDENTIALS_PATH):
-    cred = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
-    firebase_admin.initialize_app(cred)
-    db = firestore.client()
-else:
-    raise ValueError(f"Firebase credential file not found at {FIREBASE_CREDENTIALS_PATH}")
-
-# === JWT UTILS ===
+# === JWT UTILITIES ===
 def create_access_token(data: dict, expires_delta=None):
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
 
 def verify_token(token: str):
     try:
@@ -68,16 +58,15 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(auth_sc
     user_data = verify_token(token)
     if not user_data:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    
-    aadhaar = user_data.get("aadhaar")
-    if session_tokens.get(aadhaar) != token:
+
+    mobile = user_data.get("mobile")
+    if session_tokens.get(mobile) != token:
         raise HTTPException(status_code=401, detail="Session expired or logged in elsewhere")
-    
+
     return user_data
 
 # === ROUTES ===
 
-# Custom 404 handler
 @app.exception_handler(404)
 async def custom_404_handler(request: Request, exc):
     file_path = os.path.join("static", "er404.html")
@@ -85,40 +74,39 @@ async def custom_404_handler(request: Request, exc):
 
 @app.post("/login")
 async def login(data: dict):
-    aadhaar = data.get("aadhaar")
     mobile = data.get("mobile")
+    aadhaar = data.get("aadhaar")
     otp = data.get("otp")
 
-    # Retrieve users from Firebase Firestore
-    users_ref = db.collection("users")
-    docs = users_ref.stream()
+    query = f"SELECT * FROM c WHERE c.mobile = '{mobile}' AND c.aadhaar = '{aadhaar}' AND c.otp = '{otp}'"
+    users = list(container.query_items(query=query, enable_cross_partition_query=False))
 
-    for doc in docs:
-        user = doc.to_dict()
-        if user["aadhaar"] == aadhaar and user["mobile"] == mobile and user["otp"] == otp:
-            token = create_access_token({"aadhaar": aadhaar})
-            session_tokens[aadhaar] = token
-            return {"token": token, "message": "Login successful"}
-    
+    if users:
+        token = create_access_token({"mobile": mobile})
+        session_tokens[mobile] = token
+        return {"token": token, "message": "Login successful"}
+
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 @app.get("/dashboard")
 async def get_dashboard(user=Depends(get_current_user)):
-    aadhaar = user.get("aadhaar")
-    # Retrieve user from Firebase Firestore
-    user_ref = db.collection("users").document(aadhaar)
-    user_doc = user_ref.get()
-    
-    if user_doc.exists:
-        return {"user": user_doc.to_dict()}
-    else:
-        raise HTTPException(status_code=404, detail="User not found")
+    mobile = user.get("mobile")
+
+    query = f"SELECT * FROM c WHERE c.mobile = '{mobile}'"
+    users = list(container.query_items(query=query, enable_cross_partition_query=False))
+
+    if users:
+        return {"user": users[0]}
+
+    raise HTTPException(status_code=404, detail="User not found")
 
 @app.post("/complaint")
 async def file_complaint(data: dict, user=Depends(get_current_user)):
-    aadhaar = user.get("aadhaar")
-    
+    mobile = user.get("mobile")
+
     complaint = {
+        "id": str(datetime.utcnow().timestamp()),  # Unique ID
+        "mobile": mobile,
         "applicationType": data.get("applicationType"),
         "receivedThrough": data.get("receivedThrough"),
         "problemSummary": data.get("problemSummary"),
@@ -128,25 +116,10 @@ async def file_complaint(data: dict, user=Depends(get_current_user)):
         "timestamp": datetime.utcnow().isoformat()
     }
 
-    # Retrieve user from Firebase Firestore
-    user_ref = db.collection("users").document(aadhaar)
-    user_doc = user_ref.get()
-    
-    if user_doc.exists:
-        user_data = user_doc.to_dict()
-        complaints = user_data.get("complaints", [])
-        complaints.append(complaint)
-        
-        # Update the user's complaints in Firebase Firestore
-        user_ref.update({"complaints": complaints})
-        
-        return {"message": "Complaint filed successfully", "complaint": complaint}
-    else:
-        raise HTTPException(status_code=404, detail="User not found")
+    container.create_item(body=complaint)
+    return {"message": "Complaint filed successfully", "complaint": complaint}
 
-
-
-# Run the application with uvicorn
-if __name__ == "__main__":
+# Run the application
+if _name_ == "_main_":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
