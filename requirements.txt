@@ -20,3 +20,4 @@ starlette
 typing-inspection
 typing_extensions
 uvicorn
+azure-cosmos
