@@ -91,26 +91,32 @@ async def custom_404_handler(request: Request, exc):
     return FileResponse(file_path, status_code=404)
 
 @app.post("/login")
-async def login(data: LoginRequest):
+async def login(data: dict):
+    mobile = data.get("mobile")
+    aadhaar = data.get("aadhaar")
+    otp = data.get("otp")
+
     query = "SELECT * FROM c WHERE c.mobile = @mobile AND c.aadhaar = @aadhaar AND c.otp = @otp"
     parameters = [
-        {"name": "@mobile", "value": data.mobile},
-        {"name": "@aadhaar", "value": data.aadhaar},
-        {"name": "@otp", "value": data.otp}
+        {"name": "@mobile", "value": mobile},
+        {"name": "@aadhaar", "value": aadhaar},
+        {"name": "@otp", "value": otp}
     ]
 
     users = list(container.query_items(
         query=query,
         parameters=parameters,
-        partition_key=data.mobile
+        partition_key=mobile  # <=== FIXED
     ))
 
     if users:
-        token = create_access_token({"mobile": data.mobile})
-        session_tokens[data.mobile] = token
+        token = create_access_token({"mobile": mobile})
+        session_tokens[mobile] = token
         return {"token": token, "message": "Login successful"}
 
     raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
 
 @app.get("/dashboard")
 async def get_dashboard(user=Depends(get_current_user)):
