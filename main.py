@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from azure.cosmos import CosmosClient, PartitionKey
 from pydantic import BaseModel
 import os
+from fastapi import UploadFile, File
+import base64
 
 # === CONFIG ===
 SECRET_KEY = "super-secret-key"
@@ -72,7 +74,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(auth_sc
 # === REQUEST MODELS ===
 class LoginRequest(BaseModel):
     mobile: str
-    aadhaar: str
     otp: str
 
 class ComplaintRequest(BaseModel):
@@ -91,22 +92,20 @@ async def custom_404_handler(request: Request, exc):
     return FileResponse(file_path, status_code=404)
 
 @app.post("/login")
-async def login(data: dict):
-    mobile = data.get("mobile")
-    aadhaar = data.get("aadhaar")
-    otp = data.get("otp")
+async def login(data: LoginRequest):
+    mobile = data.mobile
+    otp = data.otp
 
-    query = "SELECT * FROM c WHERE c.mobile = @mobile AND c.aadhaar = @aadhaar AND c.otp = @otp"
+    query = "SELECT * FROM c WHERE c.mobile = @mobile AND c.otp = @otp"
     parameters = [
         {"name": "@mobile", "value": mobile},
-        {"name": "@aadhaar", "value": aadhaar},
         {"name": "@otp", "value": otp}
     ]
 
     users = list(container.query_items(
         query=query,
         parameters=parameters,
-        partition_key=mobile  # <=== FIXED
+        partition_key=mobile
     ))
 
     if users:
@@ -115,8 +114,6 @@ async def login(data: dict):
         return {"token": token, "message": "Login successful"}
 
     raise HTTPException(status_code=401, detail="Invalid credentials")
-
-
 
 @app.get("/dashboard")
 async def get_dashboard(user=Depends(get_current_user)):
@@ -136,24 +133,27 @@ async def get_dashboard(user=Depends(get_current_user)):
 
     raise HTTPException(status_code=404, detail="User not found")
 
+
 @app.post("/complaint")
-async def file_complaint(data: ComplaintRequest, user=Depends(get_current_user)):
+async def file_complaint(pdf: UploadFile = File(...), user=Depends(get_current_user)):
+    if pdf.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    pdf_bytes = await pdf.read()
+    encoded_pdf = base64.b64encode(pdf_bytes).decode('utf-8')  # encode to string
+
     mobile = user.get("mobile")
 
     complaint = {
         "id": str(datetime.utcnow().timestamp()),
         "mobile": mobile,
-        "applicationType": data.applicationType,
-        "receivedThrough": data.receivedThrough,
-        "problemSummary": data.problemSummary,
-        "religion": data.religion,
-        "caste": data.caste,
-        "occupation": data.occupation,
+        "pdf_filename": pdf.filename,
+        "pdf_base64": encoded_pdf,
         "timestamp": datetime.utcnow().isoformat()
     }
 
     container.create_item(body=complaint)
-    return {"message": "Complaint filed successfully", "complaint": complaint}
+    return {"message": "Complaint PDF uploaded successfully", "complaint_id": complaint["id"]}
 
 # === RUN ===
 if __name__ == "__main__":
